@@ -1,0 +1,89 @@
+# =============================================================================
+# Audio Pipeline Integrated - 統合.gitignore
+# =============================================================================
+
+# Python関連
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 音声ファイル関連
+*.wav
+*.mp3
+*.m4a
+*.flac
+*.aac
+*.ogg
+*.wma
+*.au
+*.raw
+
+# Python_Audio_dataset関連
+Python_Audio_dataset/dataset/
+Python_Audio_dataset/data/session.json
+Python_Audio_dataset/temp/
+
+# AudioOpt関連
+AudioOpt/dataset/
+AudioOpt/processed/
+AudioOpt/models/
+AudioOpt/output/
+AudioOpt/cache/
+AudioOpt/temp/
+AudioOpt/runs/
+AudioOpt/logs/
+AudioOpt/checkpoints/
+AudioOpt/wandb/
+
+# shared_dataset - 構造は残してファイルのみ除外
+shared_dataset/**/*
+!shared_dataset/
+!shared_dataset/*/
+!shared_dataset/*/.gitkeep
+!shared_dataset/**/.gitkeep
+
+# ログファイル
+*.log
+logs/
+
+# IDE・エディター関連
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS関連
+.DS_Store
+Thumbs.db
+
+# 設定・認証情報
+.env
+*.key
+*.pem
+
+# 一時ファイル
+*.tmp
+*.temp
+temp/
+
+# バックアップファイル
+*.bak
+*.backup
+*.old
