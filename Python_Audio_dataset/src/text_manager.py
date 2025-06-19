@@ -1,8 +1,19 @@
 import json
+import sys
 from pathlib import Path
+
+# 統一ログシステム
+sys.path.append(str(Path(__file__).parent.parent.parent / "common"))
+try:
+    from logger import get_logger
+except ImportError:
+    # フォールバック用のダミーロガー
+    import logging
+    def get_logger(name): return logging.getLogger(name)
 
 class TextManager:
     def __init__(self, input_dir="data/input"):
+        self.logger = get_logger("TextManager")
         self.input_dir = Path(input_dir)
         self.current_file = None
         self.current_index = 0  # current_line → current_index に変更
@@ -12,6 +23,7 @@ class TextManager:
         
         # 初期化時にテキストファイルを自動検索・読み込み
         self.auto_load_text_file()
+        self.logger.info(f"TextManager初期化完了: {len(self.all_texts)}行")
         
     def auto_load_text_file(self):
         """テキストファイルの自動検索・読み込み"""

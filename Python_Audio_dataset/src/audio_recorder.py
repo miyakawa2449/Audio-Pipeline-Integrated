@@ -6,8 +6,18 @@ import sys
 import os
 from pathlib import Path
 
+# 統一ログシステム
+sys.path.append(str(Path(__file__).parent.parent.parent / "common"))
+try:
+    from logger import get_logger
+except ImportError:
+    # フォールバック用のダミーロガー
+    import logging
+    def get_logger(name): return logging.getLogger(name)
+
 class AudioRecorder:
     def __init__(self, sample_rate=44100, channels=1):
+        self.logger = get_logger("AudioRecorder")
         self.sample_rate = sample_rate
         self.channels = channels
         self.is_recording = False
@@ -16,6 +26,7 @@ class AudioRecorder:
         self.recording_thread = None
         self.input_thread = None
         self.should_stop = False
+        self.logger.info(f"AudioRecorder初期化: {sample_rate}Hz, {channels}ch")
         
     def reset_recording(self):
         """録音状態をリセット"""
@@ -33,11 +44,13 @@ class AudioRecorder:
             self.input_thread.join(timeout=1)
         
         print("🔄 録音状態をリセットしました")
+        self.logger.debug("録音状態をリセット")
         
     def start_recording(self):
         """録音開始（カウントダウンなし）"""
         if self.is_recording:
             print("⚠️ 既に録音中です")
+            self.logger.warning("既に録音中です")
             return False
             
         # 録音デバイス確認（簡潔に）

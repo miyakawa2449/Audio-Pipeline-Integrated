@@ -3,13 +3,32 @@ import sys
 import time
 from pathlib import Path
 
+# 統一ログシステムと共通モジュール
+sys.path.append(str(Path(__file__).parent.parent.parent / "common"))
+try:
+    from logger import get_logger
+    from audio_utils import get_audio_utils
+    from file_utils import setup_directories, create_metadata_file, update_dataset_metadata
+    from device_utils import get_audio_devices, log_system_summary
+except ImportError:
+    # フォールバック用のダミーロガー
+    import logging
+    def get_logger(name): return logging.getLogger(name)
+    def get_audio_utils(*args): return None
+    def setup_directories(*args): return True
+    def create_metadata_file(*args): return True
+    def update_dataset_metadata(*args): return True
+    def get_audio_devices(): return {}
+    def log_system_summary(): pass
+
 # 必要なモジュールのインポート
 from text_manager import TextManager
 from audio_recorder import AudioRecorder
 
 class AudioDatasetCreator:
     def __init__(self):
-        print("🚀 AI音声学習用データセット作成ツールを初期化中...")
+        self.logger = get_logger("AudioDataset")
+        self.logger.start_operation("AI音声学習用データセット作成ツール初期化")
         
         # TextManager初期化
         self.text_manager = TextManager()
@@ -18,42 +37,67 @@ class AudioDatasetCreator:
         self.audio_recorder = AudioRecorder()
         self.current_audio = None
         
-        # ディレクトリセットアップ
-        self.setup_directories()
+        # ディレクトリセットアップ（共通モジュール使用）
+        self.setup_directories_common()
+        
+        # システム情報ログ
+        log_system_summary()
         
         # 初期化確認
         self.check_initialization()
+        
+        # 共通音声ユーティリティ初期化
+        self.audio_utils = get_audio_utils(self.audio_recorder.sample_rate)
 
     def check_initialization(self):
         """初期化状態の確認"""
-        print("\n📋 初期化状態確認:")
+        print("\n📋 初期化状態確認:")  # ユーザーインターフェース用のみ保持
         
         # テキストファイル確認
         if self.text_manager.all_texts:
-            print(f"✅ テキスト読み込み: {len(self.text_manager.all_texts)}行")
-            print(f"📄 ファイル名: {self.text_manager.filename}")
+            text_count = len(self.text_manager.all_texts)
+            filename = self.text_manager.filename
+            print(f"✅ テキスト読み込み: {text_count}行")
+            print(f"📄 ファイル名: {filename}")
+            self.logger.info(f"テキストファイル読み込み成功: {text_count}行 ({filename})")
         else:
             print("❌ テキストが読み込まれていません")
             print("   'rf' コマンドでテキストファイルを読み込んでください")
+            self.logger.warning("テキストファイルが読み込まれていません")
         
         # AudioRecorder確認
+        sample_rate = self.audio_recorder.sample_rate
         print(f"✅ AudioRecorder初期化: 成功")
-        print(f"🎤 サンプルレート: {self.audio_recorder.sample_rate}Hz")
+        print(f"🎤 サンプルレート: {sample_rate}Hz")
+        self.logger.info(f"AudioRecorder初期化成功: {sample_rate}Hz")
         
         # ディレクトリ確認
         required_dirs = ["dataset/audio_files", "dataset/meta_files"]
         for dir_path in required_dirs:
             if Path(dir_path).exists():
                 print(f"✅ ディレクトリ: {dir_path}")
+                self.logger.debug(f"ディレクトリ確認成功: {dir_path}")
             else:
                 print(f"❌ ディレクトリ: {dir_path}")
+                self.logger.error(f"ディレクトリが見つかりません: {dir_path}")
+        
+        self.logger.complete_operation("初期化状態確認")
         
         print("="*50)
 
     def setup_directories(self):
-        """必要なディレクトリを作成"""
+        """必要なディレクトリを作成（旧版）"""
         Path("dataset/audio_files").mkdir(parents=True, exist_ok=True)
         Path("dataset/meta_files").mkdir(parents=True, exist_ok=True)
+    
+    def setup_directories_common(self):
+        """必要なディレクトリを作成（共通モジュール版）"""
+        directories = ["dataset/audio_files", "dataset/meta_files", "data"]
+        success = setup_directories(directories)
+        if success:
+            self.logger.success("全ディレクトリ作成完了")
+        else:
+            self.logger.warning("一部ディレクトリ作成に失敗")
 
     def display_interface(self):
         """メインインターフェース表示"""
@@ -246,70 +290,123 @@ class AudioDatasetCreator:
             print("⚠️ 録音中ではありません")
 
     def handle_record_stop_save(self):
-        """録音停止・保存処理"""
-        if not self.audio_recorder.is_recording:
-            print("⚠️ 録音中ではありません")
-            return
-
-        current_text = self.text_manager.get_current_text()
-        if not current_text:
-            print("❌ 現在のテキストが見つかりません")
-            return
-
+        """録音停止・保存処理 - メイン制御関数"""
         try:
-            file_number = current_text['line_number']
-            audio_filename = f"audio_{file_number:04d}.wav"
-            audio_path = Path("dataset/audio_files") / audio_filename
+            # 1. 入力検証
+            if not self._validate_recording_state():
+                return
             
-            # 既存ファイル確認
-            if audio_path.exists():
-                print(f"\n⚠️ {audio_filename} は既に存在します。")
-                overwrite = input("上書きしますか？ (y/n): ").strip().lower()
-                if overwrite not in ['y', 'yes']:
-                    print("❌ 保存をキャンセルしました")
-                    return
+            current_text = self.text_manager.get_current_text()
+            if not current_text:
+                print("❌ 現在のテキストが見つかりません")
+                self.logger.error("現在のテキストが見つかりません")
+                return
             
-            # 録音停止
-            if hasattr(self.audio_recorder, 'stop_recording'):
-                self.current_audio = self.audio_recorder.stop_recording()
-            else:
-                self.audio_recorder.is_recording = False
-                self.current_audio = self.audio_recorder.get_recorded_audio()
+            # 2. ファイル準備
+            audio_filename, audio_path = self._prepare_audio_file(current_text)
+            if not audio_filename:
+                return
             
-            if self.current_audio is not None:
-                # 音声保存
-                success = False
-                if hasattr(self.audio_recorder, 'save_audio'):
-                    # 新しいsave_audioメソッド（引数2つ）
-                    if len(self.audio_recorder.save_audio.__code__.co_varnames) > 2:
-                        success = self.audio_recorder.save_audio(self.current_audio, audio_filename)
-                    else:
-                        success = self.audio_recorder.save_audio(str(audio_path))
-                else:
-                    # フォールバック保存
-                    success = self.save_audio_fallback(self.current_audio, audio_path)
-                
-                if success:
-                    # メタデータ保存
-                    self.save_meta_file(str(audio_path), current_text['text'])
-                    self.update_metadata_file(audio_filename, current_text['text'])
-                    
-                    # テキストマネージャー更新
-                    self.text_manager.mark_as_recorded(audio_filename, file_number)
-                    
-                    print(f"💾 録音保存完了: {audio_filename}")
-                    
-                    # 次の行に自動移動
-                    self.text_manager.next_line()
-                else:
-                    print("❌ 音声保存に失敗しました")
-            else:
+            # 3. 録音停止と音声取得
+            audio_data = self._stop_recording_and_get_audio()
+            if audio_data is None:
                 print("❌ 録音データが見つかりません")
+                self.logger.error("録音データが見つかりません")
+                return
+            
+            # 4. 音声保存
+            if self._save_audio_data(audio_data, audio_path, audio_filename):
+                # 5. メタデータ処理
+                self._process_metadata(audio_path, audio_filename, current_text)
+                print(f"💾 録音保存完了: {audio_filename}")
+                self.logger.success(f"録音保存完了: {audio_filename}")
+            else:
+                print("❌ 音声保存に失敗しました")
+                self.logger.error("音声保存に失敗しました")
                 
         except Exception as e:
             print(f"❌ 録音停止・保存エラー: {e}")
+            self.logger.error(f"録音停止・保存エラー: {e}")
             import traceback
             traceback.print_exc()
+    
+    def _validate_recording_state(self) -> bool:
+        """録音状態の検証"""
+        if not self.audio_recorder.is_recording:
+            print("⚠️ 録音中ではありません")
+            self.logger.warning("録音中ではありません")
+            return False
+        return True
+    
+    def _prepare_audio_file(self, current_text) -> tuple:
+        """音声ファイルの準備"""
+        file_number = current_text['line_number']
+        audio_filename = f"audio_{file_number:04d}.wav"
+        audio_path = Path("dataset/audio_files") / audio_filename
+        
+        # 既存ファイル確認
+        if audio_path.exists():
+            print(f"\n⚠️ {audio_filename} は既に存在します。")
+            overwrite = input("上書きしますか？ (y/n): ").strip().lower()
+            if overwrite not in ['y', 'yes']:
+                print("❌ 保存をキャンセルしました")
+                self.logger.info(f"ファイル上書きをキャンセル: {audio_filename}")
+                return None, None
+            self.logger.info(f"既存ファイルを上書き: {audio_filename}")
+        
+        return audio_filename, audio_path
+    
+    def _stop_recording_and_get_audio(self):
+        """録音停止と音声データ取得"""
+        if hasattr(self.audio_recorder, 'stop_recording'):
+            audio_data = self.audio_recorder.stop_recording()
+            self.logger.debug("録音停止: stop_recordingメソッド使用")
+        else:
+            self.audio_recorder.is_recording = False
+            audio_data = self.audio_recorder.get_recorded_audio()
+            self.logger.debug("録音停止: get_recorded_audioメソッド使用")
+        
+        self.current_audio = audio_data
+        return audio_data
+    
+    def _save_audio_data(self, audio_data, audio_path, audio_filename) -> bool:
+        """音声データの保存"""
+        success = False
+        
+        if hasattr(self.audio_recorder, 'save_audio'):
+            # 新しいsave_audioメソッド（引数2つ）
+            if len(self.audio_recorder.save_audio.__code__.co_varnames) > 2:
+                success = self.audio_recorder.save_audio(audio_data, audio_filename)
+                self.logger.debug(f"save_audioメソッド使用(引数2つ): {audio_filename}")
+            else:
+                success = self.audio_recorder.save_audio(str(audio_path))
+                self.logger.debug(f"save_audioメソッド使用(引数1つ): {audio_path}")
+        else:
+            # フォールバック保存
+            success = self.save_audio_fallback(audio_data, audio_path)
+            self.logger.debug(f"フォールバック保存使用: {audio_path}")
+        
+        return success
+    
+    def _process_metadata(self, audio_path, audio_filename, current_text):
+        """メタデータ処理"""
+        file_number = current_text['line_number']
+        
+        # メタファイル保存
+        self.save_meta_file(str(audio_path), current_text['text'])
+        self.logger.debug(f"メタファイル保存: meta_{file_number:04d}.txt")
+        
+        # metadata.txt更新
+        self.update_metadata_file(audio_filename, current_text['text'])
+        self.logger.debug("metadata.txt更新")
+        
+        # テキストマネージャー更新
+        self.text_manager.mark_as_recorded(audio_filename, file_number)
+        self.logger.debug(f"テキストマネージャー更新: {file_number}")
+        
+        # 次の行に自動移動
+        self.text_manager.next_line()
+        self.logger.info("次のテキスト行に移動")
 
     def save_audio_fallback(self, audio_data, filepath):
         """フォールバック音声保存"""
