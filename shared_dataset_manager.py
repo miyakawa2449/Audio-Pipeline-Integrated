@@ -3,9 +3,15 @@ import shutil
 import json
 from pathlib import Path
 from datetime import datetime
+from common.logger import get_logger
+from common.error_handler import error_handler, ErrorSeverity, handle_error
+from common.exceptions import (
+    AudioPipelineError, AudioFileError, SystemError
+)
 
 class SharedDatasetManager:
     def __init__(self):
+        self.logger = get_logger("SharedDatasetManager")
         self.root_dir = Path(__file__).parent
         self.shared_dataset_dir = self.root_dir / "shared_dataset"
         self.python_dataset_dir = self.root_dir / "Python_Audio_dataset" / "dataset"
@@ -29,8 +35,9 @@ class SharedDatasetManager:
             directory.mkdir(parents=True, exist_ok=True)
         
         self._log("共有ディレクトリ構造を作成しました")
-        print("📁 共有ディレクトリ構造を作成しました")
+        self.logger.success("共有ディレクトリ構造を作成しました")
     
+    @error_handler(severity=ErrorSeverity.MEDIUM, recovery=True)
     def sync_all_projects(self):
         """全プロジェクトのデータ同期"""
         self._log("=== 全プロジェクト同期開始 ===")
@@ -46,19 +53,19 @@ class SharedDatasetManager:
             self.create_integration_metadata()
             
             self._log("全プロジェクト同期完了")
-            print("✅ 全プロジェクト同期完了")
+            self.logger.complete_operation("全プロジェクト同期")
             
         except Exception as e:
             error_msg = f"同期エラー: {e}"
             self._log(error_msg)
-            raise e
+            raise AudioPipelineError(error_msg)
     
     def sync_from_python_audio(self):
         """Python_Audio_datasetからshared_datasetへ同期"""
         self._log("Python_Audio_dataset → shared_dataset 同期開始")
         
         if not self.python_dataset_dir.exists():
-            print("⚠️ Python_Audio_dataset/dataset が見つかりません")
+            self.logger.warning("Python_Audio_dataset/dataset が見つかりません")
             return
         
         # 音声ファイル同期
@@ -67,7 +74,7 @@ class SharedDatasetManager:
         
         if audio_src.exists():
             synced_count = self._sync_directory(audio_src, audio_dst, "*.wav")
-            print(f"🎵 音声ファイル同期: {synced_count} 件")
+            self.logger.audio_info(f"音声ファイル同期: {synced_count} 件")
             self._log(f"音声ファイル同期: {synced_count} 件")
         
         # メタファイル同期
@@ -76,7 +83,7 @@ class SharedDatasetManager:
         
         if meta_src.exists():
             synced_count = self._sync_directory(meta_src, meta_dst, "*.txt")
-            print(f"📝 メタファイル同期: {synced_count} 件")
+            self.logger.info(f"📝 メタファイル同期: {synced_count} 件")
             self._log(f"メタファイル同期: {synced_count} 件")
         
         # metadata.txt同期
@@ -85,7 +92,7 @@ class SharedDatasetManager:
         
         if metadata_src.exists():
             shutil.copy2(metadata_src, metadata_dst)
-            print("📋 metadata.txt 同期完了")
+            self.logger.success("metadata.txt 同期完了")
             self._log("metadata.txt 同期完了")
     
     def sync_to_audioopt(self):
@@ -108,7 +115,7 @@ class SharedDatasetManager:
         
         if audio_src.exists():
             synced_count = self._sync_directory(audio_src, audio_dst, "*.wav")
-            print(f"🎵 AudioOpt音声同期: {synced_count} 件")
+            self.logger.audio_info(f"AudioOpt音声同期: {synced_count} 件")
         
         # メタファイル同期
         meta_src = self.shared_dataset_dir / "meta_files"
@@ -116,7 +123,7 @@ class SharedDatasetManager:
         
         if meta_src.exists():
             synced_count = self._sync_directory(meta_src, meta_dst, "*.txt")
-            print(f"📝 AudioOptメタ同期: {synced_count} 件")
+            self.logger.info(f"📝 AudioOptメタ同期: {synced_count} 件")
         
         # metadata.txt同期
         metadata_src = self.shared_dataset_dir / "metadata.txt"
@@ -124,9 +131,9 @@ class SharedDatasetManager:
         
         if metadata_src.exists():
             shutil.copy2(metadata_src, metadata_dst)
-            print("📋 AudioOpt metadata.txt 同期完了")
+            self.logger.success("AudioOpt metadata.txt 同期完了")
         
-        print("🤖 AudioOpt への同期完了")
+        self.logger.complete_operation("AudioOpt への同期")
         self._log("AudioOpt への同期完了")
     
     def _sync_directory(self, src_dir, dst_dir, pattern):
@@ -143,7 +150,9 @@ class SharedDatasetManager:
                     shutil.copy2(file_path, dst_file)
                     synced_count += 1
                 except Exception as e:
-                    self._log(f"ファイル同期エラー {file_path}: {e}")
+                    error_msg = f"ファイル同期エラー {file_path}: {e}"
+                    self._log(error_msg)
+                    self.logger.warning(error_msg)
         
         return synced_count
     
@@ -213,30 +222,31 @@ class SharedDatasetManager:
         
         print("="*50)
     
+    @error_handler(severity=ErrorSeverity.LOW, recovery=True)
     def cleanup_and_organize(self):
         """データ整理・最適化"""
-        print("🧹 データ整理を開始...")
+        self.logger.start_operation("データ整理")
         
         # 重複ファイルチェック
         duplicates = self._find_duplicate_files()
         if duplicates:
-            print(f"⚠️ 重複ファイル発見: {len(duplicates)} 件")
+            self.logger.warning(f"重複ファイル発見: {len(duplicates)} 件")
             for dup in duplicates[:5]:  # 最初の5件のみ表示
-                print(f"   {dup}")
+                self.logger.debug(f"   {dup}")
         
         # 空ディレクトリクリーンアップ
         empty_dirs = self._find_empty_directories()
         for empty_dir in empty_dirs:
             try:
                 empty_dir.rmdir()
-                print(f"🗑️ 空ディレクトリ削除: {empty_dir}")
+                self.logger.info(f"🗑️ 空ディレクトリ削除: {empty_dir}")
             except OSError:
                 pass
         
         # ログファイルローテーション
         self._rotate_log_files()
         
-        print("✅ データ整理完了")
+        self.logger.complete_operation("データ整理")
     
     def _find_duplicate_files(self):
         """重複ファイル検出"""
@@ -273,7 +283,7 @@ class SharedDatasetManager:
         if self.log_file.exists() and self.log_file.stat().st_size > 1024 * 1024:  # 1MB以上
             backup_log = self.log_file.with_suffix('.txt.bak')
             shutil.move(self.log_file, backup_log)
-            print("📋 ログファイルをローテーションしました")
+            self.logger.info("📋 ログファイルをローテーションしました")
     
     def _log(self, message):
         """ログ記録"""
@@ -283,6 +293,7 @@ class SharedDatasetManager:
         try:
             with open(self.log_file, 'a', encoding='utf-8') as f:
                 f.write(log_message)
-        except Exception:
-            # ログ書き込みエラーは無視
+        except Exception as e:
+            # ログ書き込みエラーは無視（非クリティカル）
+            self.logger.debug(f"ログ書き込みエラー: {e}")
             pass

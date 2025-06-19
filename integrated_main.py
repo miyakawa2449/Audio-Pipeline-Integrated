@@ -2,6 +2,7 @@ import os
 import sys
 import subprocess
 from pathlib import Path
+from common.logger import get_logger
 
 # プロジェクトパスをPythonパスに追加
 current_dir = Path(__file__).parent
@@ -15,15 +16,16 @@ from shared_dataset_manager import SharedDatasetManager
 
 class IntegratedAudioPipeline:
     def __init__(self):
+        self.logger = get_logger("IntegratedPipeline")
         self.dataset_manager = SharedDatasetManager()
         self.current_dir = Path(__file__).parent
         self.setup_environment()
     
     def setup_environment(self):
         """統合環境のセットアップ"""
-        print("🔧 統合環境をセットアップ中...")
+        self.logger.start_operation("統合環境セットアップ")
         self.dataset_manager.setup_shared_directories()
-        print("✅ セットアップ完了\n")
+        self.logger.complete_operation("統合環境セットアップ")
         
     def run(self):
         """統合メインメニュー"""
@@ -68,7 +70,7 @@ class IntegratedAudioPipeline:
         
         python_audio_dir = self.current_dir / "Python_Audio_dataset"
         if not python_audio_dir.exists():
-            print("❌ Python_Audio_dataset ディレクトリが見つかりません")
+            self.logger.error("Python_Audio_dataset ディレクトリが見つかりません")
             return
         
         try:
@@ -80,21 +82,21 @@ class IntegratedAudioPipeline:
             env = os.environ.copy()
             env['PYTHONPATH'] = str(python_audio_dir / "src")
             
-            print("🚀 Python_Audio_dataset を起動中...")
+            self.logger.start_operation("Python_Audio_dataset 起動")
             result = subprocess.run([
                 sys.executable, "src/main.py"
             ], cwd=python_audio_dir, env=env)
             
             if result.returncode == 0:
-                print("✅ Python_Audio_dataset が正常に終了しました")
+                self.logger.success("Python_Audio_dataset が正常に終了しました")
                 # 自動同期
-                print("🔄 自動同期を実行中...")
+                self.logger.start_operation("自動同期")
                 self.dataset_manager.sync_from_python_audio()
             else:
-                print(f"⚠️ Python_Audio_dataset が終了コード {result.returncode} で終了")
+                self.logger.warning(f"Python_Audio_dataset が終了コード {result.returncode} で終了")
                 
         except Exception as e:
-            print(f"❌ Python_Audio_dataset 実行エラー: {e}")
+            self.logger.error(f"Python_Audio_dataset 実行エラー: {e}")
         finally:
             os.chdir(original_cwd)
     
@@ -104,62 +106,69 @@ class IntegratedAudioPipeline:
         
         audioopt_dir = self.current_dir / "AudioOpt"
         if not audioopt_dir.exists():
-            print("❌ AudioOpt ディレクトリが見つかりません")
+            self.logger.error("AudioOpt ディレクトリが見つかりません")
             return
             
         try:
             # 事前同期
-            print("🔄 AudioOpt用データ同期中...")
+            self.logger.start_operation("AudioOpt用データ同期")
             self.dataset_manager.sync_to_audioopt()
             
             original_cwd = os.getcwd()
             os.chdir(audioopt_dir)
             
-            print("🚀 AudioOpt を起動中...")
+            self.logger.start_operation("AudioOpt 起動")
             result = subprocess.run([sys.executable, "main.py"], cwd=audioopt_dir)
             
             if result.returncode == 0:
-                print("✅ AudioOpt が正常に終了しました")
+                self.logger.success("AudioOpt が正常に終了しました")
             else:
-                print(f"⚠️ AudioOpt が終了コード {result.returncode} で終了")
+                self.logger.warning(f"AudioOpt が終了コード {result.returncode} で終了")
                 
         except Exception as e:
-            print(f"❌ AudioOpt 実行エラー: {e}")
+            self.logger.error(f"AudioOpt 実行エラー: {e}")
         finally:
             os.chdir(original_cwd)
     
+    @error_handler(severity=ErrorSeverity.MEDIUM, recovery=True)
     def sync_datasets(self):
         """データセット同期"""
-        print("🔄 データセット同期を開始...")
+        self.logger.start_operation("データセット同期")
         try:
             self.dataset_manager.sync_all_projects()
-            print("✅ 同期完了")
+            self.logger.complete_operation("データセット同期")
         except Exception as e:
-            print(f"❌ 同期エラー: {e}")
+            raise AudioPipelineError(f"データ同期エラー: {e}")
     
+    @error_handler(severity=ErrorSeverity.LOW, recovery=True)
     def show_status(self):
         """統合ステータス表示"""
         try:
             self.dataset_manager.show_integration_status()
         except Exception as e:
-            print(f"❌ ステータス表示エラー: {e}")
+            raise AudioPipelineError(f"ステータス表示エラー: {e}")
     
+    @error_handler(severity=ErrorSeverity.LOW, recovery=True)
     def cleanup_and_organize(self):
         """データ整理・最適化"""
-        print("🧹 データ整理・最適化を開始...")
+        self.logger.start_operation("データ整理・最適化")
         try:
             self.dataset_manager.cleanup_and_organize()
-            print("✅ 整理完了")
+            self.logger.complete_operation("データ整理・最適化")
         except Exception as e:
-            print(f"❌ 整理エラー: {e}")
+            raise AudioPipelineError(f"データ整理エラー: {e}")
+
+@error_handler(severity=ErrorSeverity.CRITICAL, recovery=False)
+def main():
+    """メイン実行関数"""
+    pipeline = IntegratedAudioPipeline()
+    pipeline.run()
 
 if __name__ == "__main__":
     try:
-        pipeline = IntegratedAudioPipeline()
-        pipeline.run()
+        main()
     except KeyboardInterrupt:
         print("\n👋 プログラムを終了しました")
     except Exception as e:
-        print(f"❌ 予期しないエラー: {e}")
-        import traceback
-        traceback.print_exc()
+        logger = get_logger("Main")
+        handle_error(e, severity=ErrorSeverity.CRITICAL)
