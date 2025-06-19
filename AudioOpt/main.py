@@ -5,60 +5,88 @@
 
 import sys
 import os
-import traceback
+from pathlib import Path
+
+# Common modules import
+sys.path.append(str(Path(__file__).parent.parent / "common"))
+try:
+    from logger import get_logger
+    from error_handler import error_handler, ErrorSeverity, handle_error
+    from exceptions import (
+        AudioPipelineError, AudioFileError, ModelError, 
+        DeviceError, SystemError, AppleSiliconError
+    )
+except ImportError:
+    # Fallback for missing common modules
+    import logging
+    def get_logger(name): return logging.getLogger(name)
+    def error_handler(**kwargs): return lambda f: f
+    def handle_error(e, **kwargs): raise e
+    ErrorSeverity = type('ErrorSeverity', (), {'MEDIUM': 'medium', 'HIGH': 'high', 'CRITICAL': 'critical'})
+    AudioPipelineError = Exception
+    AudioFileError = Exception
+    ModelError = Exception
+    DeviceError = Exception
+    SystemError = Exception
+    AppleSiliconError = Exception
 
 # srcディレクトリをパスに追加
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 
+# Logger initialization
+logger = get_logger("AudioOptMain")
+
 try:
     from src.core import VoiceCloner
+    logger.success("AudioOpt VoiceCloner モジュール読み込み成功")
 except ImportError as e:
-    print(f"モジュールのインポートに失敗しました: {e}")
-    print("以下を確認してください：")
-    print("1. srcディレクトリが存在するか")
-    print("2. 必要なファイルが全て配置されているか")
-    print("3. 必要なライブラリがインストールされているか")
+    error = AudioFileError(
+        f"モジュールのインポートに失敗しました: {e}",
+        suggestions=(
+            "以下を確認してください:\n"
+            "1. srcディレクトリが存在するか\n"
+            "2. 必要なファイルが全て配置されているか\n"
+            "3. 必要なライブラリがインストールされているか"
+        )
+    )
+    handle_error(error, severity=ErrorSeverity.CRITICAL)
     sys.exit(1)
 
 # =============================================================================
 # システム関連機能
 # =============================================================================
 
+@error_handler(severity=ErrorSeverity.HIGH, recovery=True)
 def check_dependencies():
     """依存関係をチェック"""
+    logger.start_operation("依存関係チェック")
     missing_packages = []
     
-    try:
-        import torch
-        print(f"✓ PyTorch: {torch.__version__}")
-    except ImportError:
-        missing_packages.append("torch")
+    dependencies = [
+        ('torch', 'PyTorch'),
+        ('torchaudio', 'Torchaudio'),
+        ('soundfile', 'Soundfile'),
+        ('numpy', 'NumPy')
+    ]
     
-    try:
-        import torchaudio
-        print(f"✓ Torchaudio: {torchaudio.__version__}")
-    except ImportError:
-        missing_packages.append("torchaudio")
-    
-    try:
-        import soundfile
-        print(f"✓ Soundfile: {soundfile.__version__}")
-    except ImportError:
-        missing_packages.append("soundfile")
-    
-    try:
-        import numpy
-        print(f"✓ NumPy: {numpy.__version__}")
-    except ImportError:
-        missing_packages.append("numpy")
+    for package_name, display_name in dependencies:
+        try:
+            module = __import__(package_name)
+            version = getattr(module, '__version__', 'unknown')
+            logger.success(f"{display_name}: {version}")
+        except ImportError:
+            missing_packages.append(package_name)
+            logger.warning(f"{display_name}: 未インストール")
     
     if missing_packages:
-        print(f"\n❌ 不足しているパッケージ: {', '.join(missing_packages)}")
-        print("以下のコマンドでインストールしてください：")
-        print(f"conda install {' '.join(missing_packages)}")
+        error = SystemError(
+            f"不足しているパッケージ: {', '.join(missing_packages)}",
+            suggestions=f"conda install {' '.join(missing_packages)}"
+        )
+        handle_error(error, severity=ErrorSeverity.HIGH)
         return False
     
-    print("✓ 全ての依存関係が満たされています\n")
+    logger.complete_operation("依存関係チェック")
     return True
 
 def display_system_info(cloner):
@@ -75,10 +103,11 @@ def display_system_info(cloner):
     if cloner.device.type == 'cuda':
         try:
             import torch
-            print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory // 1024**3} GB")
-            print(f"GPU Name: {torch.cuda.get_device_properties(0).name}")
-        except:
-            pass
+            gpu_props = torch.cuda.get_device_properties(0)
+            logger.info(f"🎮 GPU Memory: {gpu_props.total_memory // 1024**3} GB")
+            logger.info(f"🎮 GPU Name: {gpu_props.name}")
+        except Exception as e:
+            logger.warning(f"GPU情報取得エラー: {e}")
     
     if hasattr(cloner.text_processor, 'vocab') and cloner.text_processor.vocab:
         print(f"Vocabulary size: {len(cloner.text_processor.vocab)}")
@@ -90,9 +119,9 @@ def display_system_info(cloner):
         # モデルのパラメータ数を表示
         try:
             total_params = sum(p.numel() for p in cloner.model.parameters())
-            print(f"Model parameters: {total_params:,}")
-        except:
-            pass
+            logger.info(f"🤖 Model parameters: {total_params:,}")
+        except Exception as e:
+            logger.debug(f"パラメータ数取得エラー: {e}")
     else:
         print("Model: Not loaded")
 
@@ -100,18 +129,24 @@ def display_system_info(cloner):
 # メニュー1: データセット前処理とモデル訓練
 # =============================================================================
 
+@error_handler(severity=ErrorSeverity.HIGH, recovery=True)
 def train_model_interactive(cloner):
     """対話式でモデル訓練を実行"""
-    print("モデル訓練を開始します...")
+    logger.start_operation("対話式モデル訓練")
     
     # データファイルの確認
-    audio_files, text_files = cloner.collect_data_files()
-    if len(audio_files) == 0:
-        print("❌ データファイルが見つかりません。")
-        print("先にデータファイルを配置してください。")
+    try:
+        audio_files, text_files = cloner.collect_data_files()
+        if len(audio_files) == 0:
+            raise AudioFileError(
+                "データファイルが見つかりません",
+                suggestions="先にデータファイルを配置してください"
+            )
+        
+        logger.success(f"{len(audio_files)}個のデータペアが見つかりました")
+    except Exception as e:
+        handle_error(e, severity=ErrorSeverity.HIGH)
         return
-    
-    print(f"✓ {len(audio_files)}個のデータペアが見つかりました")
     
     # パラメータ入力
     try:
@@ -119,15 +154,13 @@ def train_model_interactive(cloner):
         epochs = int(epochs_input) if epochs_input else 100
         
         if epochs <= 0:
-            print("エポック数は1以上で入力してください")
-            return
+            raise ValueError("エポック数は1以上で入力してください")
             
         batch_size_input = input("バッチサイズを入力 (デフォルト: 2): ").strip()
         batch_size = int(batch_size_input) if batch_size_input else 2
         
         if batch_size <= 0 or batch_size > len(audio_files):
-            print(f"バッチサイズは1以上{len(audio_files)}以下で入力してください")
-            return
+            raise ValueError(f"バッチサイズは1以上{len(audio_files)}以下で入力してください")
         
         learning_rate_input = input("学習率を入力 (デフォルト: 0.001): ").strip()
         learning_rate = float(learning_rate_input) if learning_rate_input else 0.001
@@ -144,19 +177,23 @@ def train_model_interactive(cloner):
             return
         
         # 訓練実行
+        logger.info(f"🚀 訓練開始: epochs={epochs}, batch_size={batch_size}, lr={learning_rate}")
         cloner.train_model(epochs=epochs, batch_size=batch_size, learning_rate=learning_rate)
         
         # モデル保存
         save_confirm = input("モデルを保存しますか？ (Y/n): ").strip().lower()
         if save_confirm != 'n':
             cloner.save_model()
-            print("✓ モデルが保存されました")
+            logger.success("モデルが保存されました")
+        
+        logger.complete_operation("対話式モデル訓練")
         
     except ValueError as e:
-        print(f"❌ 入力値エラー: {e}")
+        error = ModelError(f"入力値エラー: {e}")
+        handle_error(error, severity=ErrorSeverity.MEDIUM)
     except Exception as e:
-        print(f"❌ 訓練中にエラーが発生しました: {e}")
-        traceback.print_exc()
+        error = ModelError(f"訓練中にエラーが発生しました: {e}")
+        handle_error(error, severity=ErrorSeverity.HIGH)
 
 # =============================================================================
 # メニュー2: 既存モデル読み込み
@@ -173,29 +210,33 @@ def load_model_interactive(cloner):
 # メニュー3: 音声合成
 # =============================================================================
 
+@error_handler(severity=ErrorSeverity.HIGH, recovery=True)
 def synthesize_speech_interactive(cloner):
     """対話式で音声合成を実行"""
     if cloner.model is None:
-        print("❌ モデルが読み込まれていません。")
-        print("先にモデルを読み込むか訓練してください。")
+        error = ModelError(
+            "モデルが読み込まれていません",
+            suggestions="先にモデルを読み込むか訓練してください"
+        )
+        handle_error(error, severity=ErrorSeverity.HIGH)
         return
     
     try:
         text = input("合成したいテキストを入力: ").strip()
         if not text:
-            print("❌ テキストが入力されませんでした。")
-            return
+            raise ValueError("テキストが入力されませんでした")
         
         output_path = input("出力ファイル名（空白でdefault）: ").strip()
         if not output_path:
             output_path = None
         
-        print(f"音声合成中: '{text}'")
+        logger.start_operation(f"音声合成: '{text}'")
         cloner.synthesize_speech(text, output_path)
+        logger.complete_operation("音声合成")
         
     except Exception as e:
-        print(f"❌ 音声合成エラー: {e}")
-        traceback.print_exc()
+        error = AudioPipelineError(f"音声合成エラー: {e}")
+        handle_error(error, severity=ErrorSeverity.HIGH)
 
 # =============================================================================
 # メニュー4: 新しいデータの追加（未実装）

@@ -36,6 +36,21 @@ from ..audio import AudioPreprocessor
 from ..text import TextProcessor
 from ..model import VoiceDataset, VoiceCloneModel
 
+# 統一ログシステムと共通モジュール
+try:
+    from common.logger import get_logger
+    from common.audio_utils import get_audio_utils
+    from common.device_utils import get_torch_device, get_device_utils
+    from common.file_utils import setup_directories
+except ImportError:
+    # フォールバック用のダミーロガー
+    import logging
+    def get_logger(name): return logging.getLogger(name)
+    def get_audio_utils(*args): return None
+    def get_torch_device(): return torch.device('cpu')
+    def get_device_utils(): return None
+    def setup_directories(*args): return True
+
 
 class VoiceCloner:
     """音声クローニングメインクラス"""
@@ -52,6 +67,7 @@ class VoiceCloner:
     
     def __init__(self, dataset_path: str = "dataset"):
         """初期化"""
+        self.logger = get_logger("VoiceCloner")
         self.dataset_path = dataset_path
         self.audio_path = os.path.join(dataset_path, "audio_files")
         self.meta_path = os.path.join(dataset_path, "meta_files")
@@ -59,36 +75,65 @@ class VoiceCloner:
         self.models_path = "models"
         self.output_path = "output"
         
-        # ディレクトリ作成
-        for path in [self.audio_path, self.meta_path, self.processed_path, 
-                     self.models_path, self.output_path]:
-            os.makedirs(path, exist_ok=True)
+        # ディレクトリ作成（共通モジュール使用）
+        directories = [self.audio_path, self.meta_path, self.processed_path, 
+                      self.models_path, self.output_path]
+        setup_directories(directories)
         
         # コンポーネント初期化
         self.preprocessor = AudioPreprocessor()
         self.text_processor = TextProcessor()
         self.model = None
         
-        # デバイス設定
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        print(f"Using device: {self.device}")
+        # 共通音声ユーティリティ
+        self.audio_utils = get_audio_utils(self.preprocessor.sample_rate)
+        
+        # デバイス設定（共通モジュール使用）
+        self.device = get_torch_device()
+        device_utils = get_device_utils()
+        if device_utils:
+            device_info = device_utils.get_compute_devices()
+            if device_info['mps']['available']:
+                self.logger.device_info("デバイス: Apple Silicon MPS加速")
+                self.logger.info("🍎 Apple Silicon M4 Pro optimizations enabled")
+            elif device_info['cuda']['available']:
+                gpu_count = device_info['cuda']['device_count']
+                self.logger.device_info(f"デバイス: CUDA GPU加速 ({gpu_count}デバイス)")
+            else:
+                self.logger.device_info("デバイス: CPU処理")
+        else:
+            self.logger.info(f"デバイス: {self.device}")
     
     # ==================== データ管理 ====================
     
     def collect_data_files(self) -> Tuple[List[str], List[str]]:
-        """データファイルを収集"""
+        """データファイルを収集（柔軟な検索）"""
+        import glob
+        import re
+        
         audio_files = []
         text_files = []
         
-        for i in range(1, 200):  # 最大199個まで対応
-            audio_file = os.path.join(self.audio_path, f"audio_{i}.wav")
-            meta_file = os.path.join(self.meta_path, f"meta_{i}.txt")
-            
-            if os.path.exists(audio_file) and os.path.exists(meta_file):
-                audio_files.append(audio_file)
-                text_files.append(meta_file)
+        # audio_*.wav ファイルを全て検索
+        audio_pattern = os.path.join(self.audio_path, "audio_*.wav")
+        found_audio_files = glob.glob(audio_pattern)
         
-        print(f"Found {len(audio_files)} audio-text pairs")
+        for audio_file in sorted(found_audio_files):
+            # ファイル名から番号を抽出
+            basename = os.path.basename(audio_file)
+            match = re.match(r"audio_(\d+)\.wav", basename)
+            if match:
+                number = match.group(1)
+                meta_file = os.path.join(self.meta_path, f"meta_{number}.txt")
+                
+                # 対応するメタファイルが存在する場合のみ追加
+                if os.path.exists(meta_file):
+                    audio_files.append(audio_file)
+                    text_files.append(meta_file)
+                else:
+                    self.logger.warning(f"Missing meta file for {basename}")
+        
+        self.logger.info(f"Found {len(audio_files)} audio-text pairs")
         return audio_files, text_files
     
     def add_new_data(self, new_audio_path: str, new_text_path: str):
@@ -109,69 +154,122 @@ class VoiceCloner:
     # ==================== モデル管理 ====================
     
     def train_model(self, epochs: int = 50, batch_size: int = 4, learning_rate: float = 1e-3):
-        """モデル訓練"""
-        print("Starting model training...")
+        """モデル訓練メイン関数"""
+        self.logger.start_operation("モデル訓練")
         
+        try:
+            # 1. データ準備フェーズ
+            dataloader = self._prepare_training_data(batch_size)
+            if dataloader is None:
+                return
+            
+            # 2. 訓練コンポーネント初期化
+            optimizer, criterion = self._initialize_training_components(learning_rate)
+            
+            # 3. 訓練ループ実行
+            self._execute_training_loop(epochs, dataloader, optimizer, criterion)
+            
+            self.logger.complete_operation("モデル訓練")
+            
+        except Exception as e:
+            self.logger.error(f"モデル訓練エラー: {e}")
+            raise
+    
+    def _prepare_training_data(self, batch_size: int) -> Optional[DataLoader]:
+        """訓練データの準備"""
         # データ収集
         audio_files, text_files = self.collect_data_files()
         if len(audio_files) == 0:
-            print("No training data found!")
-            return
+            self.logger.error("No training data found!")
+            return None
         
-        # テキスト処理
-        texts = []
-        for text_file in text_files:
-            with open(text_file, 'r', encoding='utf-8') as f:
-                texts.append(self.text_processor.clean_text(f.read()))
-        
-        # 語彙構築
+        # テキスト処理と語彙構築
+        texts = self._load_and_process_texts(text_files)
         self.text_processor.build_vocab(texts)
-        print(f"Built vocabulary with {len(self.text_processor.vocab)} characters")
+        self.logger.info(f"Built vocabulary with {len(self.text_processor.vocab)} characters")
         
         # データセット作成
         dataset = VoiceDataset(audio_files, text_files, self.preprocessor, self.text_processor)
         dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, 
                                collate_fn=dataset.collate_fn)
         
+        self.logger.info(f"データセット準備完了: {len(audio_files)} ファイル, {len(dataloader)} バッチ")
+        return dataloader
+    
+    def _load_and_process_texts(self, text_files: List[str]) -> List[str]:
+        """テキストファイルの読み込みと前処理"""
+        texts = []
+        for text_file in text_files:
+            try:
+                with open(text_file, 'r', encoding='utf-8') as f:
+                    texts.append(self.text_processor.clean_text(f.read()))
+            except Exception as e:
+                self.logger.warning(f"テキストファイル読み込みエラー {text_file}: {e}")
+                continue
+        return texts
+    
+    def _initialize_training_components(self, learning_rate: float) -> Tuple[optim.Optimizer, nn.Module]:
+        """訓練コンポーネントの初期化"""
         # モデル初期化
         if self.model is None:
             vocab_size = len(self.text_processor.vocab)
             self.model = VoiceCloneModel(vocab_size).to(self.device)
+            self.logger.info(f"モデル初期化完了: 語彙サイズ {vocab_size}")
         
-        # 訓練設定
+        # 最適化器と損失関数
         optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate)
         criterion = nn.MSELoss()
         self.model.train()
         
-        # 訓練ループ
+        self.logger.info(f"最適化器設定: Adam, lr={learning_rate}")
+        return optimizer, criterion
+    
+    def _execute_training_loop(self, epochs: int, dataloader: DataLoader, 
+                              optimizer: optim.Optimizer, criterion: nn.Module):
+        """訓練ループの実行"""
         for epoch in range(epochs):
             total_loss = 0
-            for batch_idx, (audio_features, audio_lengths, text_sequences, text_lengths) in enumerate(dataloader):
-                # データをデバイスに移動
-                audio_features = audio_features.to(self.device)
-                text_sequences = text_sequences.to(self.device)
-                audio_lengths = audio_lengths.to(self.device)
-                text_lengths = text_lengths.to(self.device)
-                
-                # 勾配リセット
-                optimizer.zero_grad()
-                
-                # 順伝播
-                mel_outputs, stop_tokens = self.model(text_sequences, text_lengths, audio_features)
-                
-                # 損失計算
-                loss = criterion(mel_outputs, audio_features)
-                
-                # 逆伝播
-                loss.backward()
-                optimizer.step()
-                
-                total_loss += loss.item()
+            num_batches = len(dataloader)
             
-            avg_loss = total_loss / len(dataloader)
-            print(f"Epoch [{epoch+1}/{epochs}], Loss: {avg_loss:.4f}")
+            for batch_idx, batch_data in enumerate(dataloader):
+                loss = self._process_training_batch(batch_data, optimizer, criterion)
+                total_loss += loss
+            
+            # 進捗ログ
+            avg_loss = total_loss / num_batches
+            self._log_training_progress(epoch + 1, epochs, avg_loss)
+    
+    def _process_training_batch(self, batch_data: Tuple, optimizer: optim.Optimizer, 
+                               criterion: nn.Module) -> float:
+        """単一バッチの訓練処理"""
+        audio_features, audio_lengths, text_sequences, text_lengths = batch_data
         
-        print("Training completed!")
+        # データをデバイスに移動
+        audio_features = audio_features.to(self.device)
+        text_sequences = text_sequences.to(self.device)
+        audio_lengths = audio_lengths.to(self.device)
+        text_lengths = text_lengths.to(self.device)
+        
+        # 勾配リセット
+        optimizer.zero_grad()
+        
+        # 順伝播
+        mel_outputs, stop_tokens = self.model(text_sequences, text_lengths, audio_features)
+        
+        # 損失計算と逆伝播
+        loss = criterion(mel_outputs, audio_features)
+        loss.backward()
+        optimizer.step()
+        
+        return loss.item()
+    
+    def _log_training_progress(self, epoch: int, total_epochs: int, avg_loss: float):
+        """訓練進捗のログ出力"""
+        self.logger.debug(f"Epoch [{epoch}/{total_epochs}], Loss: {avg_loss:.4f}")
+        
+        # 一定間隔で詳細ログ
+        if epoch % 10 == 0 or epoch == total_epochs:
+            self.logger.info(f"訓練進捗: Epoch {epoch}/{total_epochs}, 平均損失: {avg_loss:.4f}")
     
     def save_model(self, model_path: Optional[str] = None):
         """モデル保存"""
@@ -232,11 +330,11 @@ class VoiceCloner:
             
             # 結果表示
             self._display_results(text, output_path, audio)
-            
+            self.logger.complete_operation(f"音声合成: '{text}'")
             return True
             
         except Exception as e:
-            print(f"❌ 音声合成エラー: {e}")
+            self.logger.error(f"音声合成エラー: {e}")
             import traceback
             traceback.print_exc()
             return False
@@ -247,7 +345,7 @@ class VoiceCloner:
         text_tensor = torch.LongTensor(text_sequence).unsqueeze(0).to(self.device)
         text_lengths = torch.LongTensor([len(text_sequence)]).to(self.device)
         
-        print(f"テキスト長: {len(text_sequence)} → 期待される音声長: {len(text_sequence) * 0.1:.1f}秒")
+        self.logger.debug(f"テキスト長: {len(text_sequence)} → 期待される音声長: {len(text_sequence) * 0.1:.1f}秒")
         return text_tensor, text_lengths
     
     def _generate_mel_spectrogram(self, text_tensor: torch.Tensor, text_lengths: torch.Tensor) -> torch.Tensor:
@@ -263,10 +361,10 @@ class VoiceCloner:
             # 長さ制御
             mel_outputs = self._control_length(mel_outputs, text_tensor)
         
-        print(f"生成されたメルスペクトログラム:")
-        print(f"  フレーム数: {mel_outputs.shape[1]}")
-        print(f"  予想音声長: {mel_outputs.shape[1] * self.DEFAULT_HOP_LENGTH / self.preprocessor.sample_rate:.2f}秒")
-        print(f"  メル範囲: [{mel_outputs.min():.3f}, {mel_outputs.max():.3f}]")
+        self.logger.debug(f"生成されたメルスペクトログラム:")
+        self.logger.debug(f"  フレーム数: {mel_outputs.shape[1]}")
+        self.logger.debug(f"  予想音声長: {mel_outputs.shape[1] * self.DEFAULT_HOP_LENGTH / self.preprocessor.sample_rate:.2f}秒")
+        self.logger.debug(f"  メル範囲: [{mel_outputs.min():.3f}, {mel_outputs.max():.3f}]")
         
         return mel_outputs.squeeze(0).cpu()
     
@@ -283,11 +381,11 @@ class VoiceCloner:
         else:
             mel_normalized = mel_clipped
         
-        print(f"✓ メル正規化: [{mel_normalized.min():.3f}, {mel_normalized.max():.3f}]")
+        self.logger.debug(f"✓ メル正規化: [{mel_normalized.min():.3f}, {mel_normalized.max():.3f}]")
         
         # 異常値チェック
         if torch.isnan(mel_normalized).any() or torch.isinf(mel_normalized).any():
-            print("⚠️  メルスペクトログラムに異常値を検出。修正中...")
+            self.logger.warning("メルスペクトログラムに異常値を検出。修正中...")
             mel_normalized = torch.nan_to_num(mel_normalized, nan=0.0, 
                                             posinf=self.MEL_SCALE_MAX, neginf=self.MEL_SCALE_MIN)
         
@@ -296,7 +394,7 @@ class VoiceCloner:
     def _control_length(self, mel_outputs: torch.Tensor, text_tensor: torch.Tensor) -> torch.Tensor:
         """音声長制御"""
         if mel_outputs.shape[1] < self.MIN_FRAME_LENGTH:
-            print(f"⚠️  出力が短すぎます（{mel_outputs.shape[1]}フレーム）。拡張中...")
+            self.logger.warning(f"出力が短すぎます（{mel_outputs.shape[1]}フレーム）。拡張中...")
             
             target_length = max(self.MIN_FRAME_LENGTH, len(text_tensor[0]) * 15)
             last_frame = mel_outputs[:, -1:, :]
@@ -308,13 +406,13 @@ class VoiceCloner:
             padding = last_frame.repeat(1, repeat_count, 1) * decay_factor + noise
             
             mel_outputs = torch.cat([mel_outputs, padding], dim=1)
-            print(f"✓ {target_length}フレームに拡張しました")
+            self.logger.debug(f"✓ {target_length}フレームに拡張しました")
         
         return mel_outputs
     
     def _generate_audio(self, mel_spec: torch.Tensor) -> torch.Tensor:
         """音声生成（ボコーダー選択）"""
-        print("音声合成中...")
+        self.logger.info("音声合成中...")
         
         # 五十音台本データの有無をチェック
         has_phoneme_data = self._check_phoneme_training_data()
@@ -337,14 +435,14 @@ class VoiceCloner:
         for vocoder_func, vocoder_name in vocoder_methods:
             try:
                 audio = vocoder_func(mel_spec)
-                print(f"使用ボコーダー: {vocoder_name}")
+                self.logger.info(f"使用ボコーダー: {vocoder_name}")
                 return self._postprocess_audio(audio)
             except Exception as e:
-                print(f"{vocoder_name}エラー: {e}")
+                self.logger.warning(f"{vocoder_name}エラー: {e}")
                 continue
         
         # 最終フォールバック
-        print("全てのボコーダーが失敗。フォールバック音声を生成...")
+        self.logger.error("全てのボコーダーが失敗。フォールバック音声を生成...")
         duration = mel_spec.shape[0] * self.DEFAULT_HOP_LENGTH / self.preprocessor.sample_rate
         t = np.linspace(0, duration, int(duration * self.preprocessor.sample_rate))
         audio = 0.1 * np.sin(2 * np.pi * 200 * t)
@@ -353,7 +451,7 @@ class VoiceCloner:
     def _postprocess_audio(self, audio: torch.Tensor) -> torch.Tensor:
         """音声後処理"""
         max_amp = torch.max(torch.abs(audio))
-        print(f"生成音声の最大振幅: {max_amp:.6f}")
+        self.logger.debug(f"生成音声の最大振幅: {max_amp:.6f}")
         
         if max_amp > 1.0:
             audio = audio / max_amp * 0.8
@@ -379,17 +477,20 @@ class VoiceCloner:
     def _display_results(self, text: str, output_path: str, audio: torch.Tensor):
         """結果表示"""
         duration = len(audio) / self.preprocessor.sample_rate
+        # これらはユーザーインターフェースとしてprintを保持
         print(f"✓ 音声合成完了!")
         print(f"  入力テキスト: '{text}'")
         print(f"  出力ファイル: {output_path}")
         print(f"  音声長: {duration:.2f}秒")
         print(f"  最終振幅範囲: [{torch.min(audio):.3f}, {torch.max(audio):.3f}]")
+        # ログにも記録
+        self.logger.info(f"音声合成完了: '{text}' → {output_path} ({duration:.2f}秒)")
     
     # ==================== ボコーダー実装 ====================
     
     def _reliable_vocoder(self, mel_spec: torch.Tensor) -> torch.Tensor:
         """確実に動作するシンプルボコーダー"""
-        print(f"確実ボコーダー入力: {mel_spec.shape}")
+        self.logger.debug(f"確実ボコーダー入力: {mel_spec.shape}")
         
         # メルスペクトログラムの基本パラメータ
         mel_np = mel_spec.T.numpy() if mel_spec.shape[1] == self.DEFAULT_N_MELS else mel_spec.numpy()
@@ -536,7 +637,7 @@ class VoiceCloner:
 
     def _japanese_phoneme_vocoder(self, mel_spec: torch.Tensor) -> torch.Tensor:
         """五十音表対応日本語音韻ボコーダー"""
-        print(f"五十音対応ボコーダー入力: {mel_spec.shape}")
+        self.logger.debug(f"五十音対応ボコーダー入力: {mel_spec.shape}")
         
         # 五十音の音韻特徴データベース
         japanese_phonemes = {
