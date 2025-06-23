@@ -1,0 +1,24 @@
+# Audio Pipeline Integrated - macOS Requirements
+# Core audio processing
+sounddevice>=0.4.4
+soundfile>=0.10.0
+librosa>=0.9.0
+scipy>=1.9.0
+numpy>=1.20.0,<2.0
+
+# macOS audio integration
+pyaudio>=0.2.11
+
+# Machine learning
+# PyTorch: conda install pytorch torchaudio -c pytorch
+
+# Visualization
+matplotlib>=3.5.0
+
+# System utilities
+psutil>=5.8.0
+pathlib2>=2.3.0
+
+# Development tools
+pytest>=6.0.0
+black>=22.0.0

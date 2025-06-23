@@ -3,6 +3,8 @@ import sys
 import subprocess
 from pathlib import Path
 from common.logger import get_logger
+from common.error_handler import error_handler, ErrorSeverity, handle_error
+from common.exceptions import AudioPipelineError
 
 # プロジェクトパスをPythonパスに追加
 current_dir = Path(__file__).parent

@@ -7,7 +7,6 @@ if command -v conda >/dev/null 2>&1; then
     conda activate audio-pipeline
 else
     echo "❌ condaが見つかりません"
-    echo "💡 Minicondaをインストールしてください"
     exit 1
 fi
 
@@ -15,7 +14,7 @@ fi
 export MACOS_CONFIG="config/macos_config.json"
 
 # Apple Silicon最適化
-if [[ $(sysctl -n machdep.cpu.brand_string 2>/dev/null) == *"Apple"* ]]; then
+if [[ $(sysctl -n machdep.cpu.brand_string) == *"Apple"* ]]; then
     export PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0
     echo "🍎 Apple Silicon最適化有効"
 fi

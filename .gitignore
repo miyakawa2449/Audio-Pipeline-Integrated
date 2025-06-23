@@ -87,3 +87,35 @@ temp/
 *.bak
 *.backup
 *.old
+# macOS specific
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# macOS Thumbnails
+._*
+
+# macOS Directories potentially created on remote AFP share
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# Audio files (large)
+*.wav
+*.mp3
+*.m4a
+*.aiff
+
+# Model files (large)
+*.pth
+*.ckpt
+*.pkl
+
+# Logs
+logs/
+*.log
+
+# Config (may contain personal settings)
+config/personal_*.json

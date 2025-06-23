@@ -1,0 +1,25 @@
+{
+  "macos_optimization": {
+    "core_audio": true,
+    "low_latency": true,
+    "sample_rate": 48000,
+    "buffer_size": 512,
+    "bit_depth": 24
+  },
+  "apple_silicon": {
+    "use_mps": true,
+    "memory_optimization": true,
+    "batch_size_multiplier": 2
+  },
+  "recording": {
+    "format": "wav",
+    "channels": 1,
+    "sample_rate": 48000,
+    "bit_depth": 24
+  },
+  "processing": {
+    "multiprocessing": true,
+    "num_workers": "auto",
+    "memory_limit": "32GB"
+  }
+}
