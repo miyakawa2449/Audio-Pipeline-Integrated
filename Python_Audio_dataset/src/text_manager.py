@@ -27,9 +27,10 @@ class TextManager:
         
     def auto_load_text_file(self):
         """テキストファイルの自動検索・読み込み"""
-        # 優先順位でテキストファイルを検索
+        # 優先順位でテキストファイルを検索（適切な日本語テキストファイルを優先）
         search_files = [
             "Japanese.txt",
+            "cocoro.txt",
             "script.txt", 
             "text.txt",
             "input.txt",
@@ -53,12 +54,22 @@ class TextManager:
                     self.load_file(str(file_path))
                     return True
         
-        # .txtファイルを全検索
+        # .txtファイルを全検索（不適切なファイルを除外）
+        excluded_patterns = [
+            "requirements", "readme", "license", "changelog", 
+            "version", "config", "setup", "install"
+        ]
+        
         for txt_file in Path(".").glob("*.txt"):
             if txt_file.is_file():
+                # 不適切なファイルをスキップ
+                if any(pattern in txt_file.name.lower() for pattern in excluded_patterns):
+                    continue
+                    
                 print(f"📄 テキストファイル発見: {txt_file.name}")
-                self.load_file(str(txt_file))
-                return True
+                if self.validate_text_file(txt_file):
+                    self.load_file(str(txt_file))
+                    return True
         
         print("⚠️ テキストファイルが見つかりません")
         print("   以下のいずれかのファイルを作成してください:")
@@ -66,6 +77,33 @@ class TextManager:
             print(f"   - {filename}")
         
         return False
+    
+    def validate_text_file(self, file_path):
+        """テキストファイルが音声データセット用として適切かを検証"""
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # 最低条件チェック
+            lines = [line.strip() for line in content.split('\n') if line.strip()]
+            
+            # 行数チェック
+            if len(lines) < 3:
+                print(f"   ⚠️ {file_path.name}: 行数が少なすぎます（{len(lines)}行）")
+                return False
+            
+            # 日本語テキストかチェック
+            japanese_chars = sum(1 for char in content if '\u3040' <= char <= '\u309F' or '\u30A0' <= char <= '\u30FF' or '\u4E00' <= char <= '\u9FAF')
+            if japanese_chars < len(content) * 0.1:  # 日本語文字が10%未満
+                print(f"   ⚠️ {file_path.name}: 日本語テキストではないようです")
+                return False
+            
+            print(f"   ✅ {file_path.name}: 音声データセット用テキストとして適切（{len(lines)}行）")
+            return True
+            
+        except Exception as e:
+            print(f"   ❌ {file_path.name}: ファイル検証エラー - {e}")
+            return False
     
     def load_file(self, filename):
         """テキストファイルを読み込み"""

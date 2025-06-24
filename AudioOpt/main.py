@@ -7,6 +7,18 @@ import sys
 import os
 from pathlib import Path
 
+# 安全なinput関数
+def safe_input(prompt, default=""):
+    """EOFErrorに対応した安全なinput関数"""
+    try:
+        return input(prompt)
+    except EOFError:
+        print(f"\n[自動入力] {default}")
+        return default
+    except KeyboardInterrupt:
+        print("\n[中断されました]")
+        return "q"
+
 # Common modules import
 sys.path.append(str(Path(__file__).parent.parent / "common"))
 try:
@@ -19,22 +31,67 @@ try:
 except ImportError:
     # Fallback for missing common modules
     import logging
-    def get_logger(name): return logging.getLogger(name)
+    
+    class FallbackLogger:
+        def __init__(self, name):
+            self.logger = logging.getLogger(name)
+            self.logger.setLevel(logging.INFO)
+            if not self.logger.handlers:
+                handler = logging.StreamHandler()
+                handler.setFormatter(logging.Formatter('%(levelname)s | %(message)s'))
+                self.logger.addHandler(handler)
+        
+        def debug(self, msg): self.logger.debug(msg)
+        def info(self, msg): self.logger.info(msg)
+        def warning(self, msg): self.logger.warning(msg)
+        def error(self, msg): self.logger.error(msg)
+        def start_operation(self, msg): self.logger.info(f"🚀 {msg} を開始")
+        def complete_operation(self, msg): self.logger.info(f"✅ {msg} が完了")
+        def success(self, msg): self.logger.info(f"✅ {msg}")
+        def progress(self, msg): self.logger.info(f"🔄 {msg}")
+        def audio_info(self, msg): self.logger.info(f"🎵 {msg}")
+        def model_info(self, msg): self.logger.info(f"🤖 {msg}")
+        def device_info(self, msg): self.logger.info(f"🎛️ {msg}")
+    
+    def get_logger(name): return FallbackLogger(name)
     def error_handler(**kwargs): return lambda f: f
     def handle_error(e, **kwargs): raise e
     ErrorSeverity = type('ErrorSeverity', (), {'MEDIUM': 'medium', 'HIGH': 'high', 'CRITICAL': 'critical'})
-    AudioPipelineError = Exception
-    AudioFileError = Exception
-    ModelError = Exception
-    DeviceError = Exception
-    SystemError = Exception
-    AppleSiliconError = Exception
+    
+    class AudioPipelineError(Exception):
+        def __init__(self, message, suggestions=None):
+            super().__init__(message)
+            self.suggestions = suggestions
+    
+    class AudioFileError(AudioPipelineError): pass
+    class ModelError(AudioPipelineError): pass
+    class DeviceError(AudioPipelineError): pass
+    class SystemError(AudioPipelineError): pass
+    class AppleSiliconError(AudioPipelineError): pass
 
 # srcディレクトリをパスに追加
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 
 # Logger initialization
 logger = get_logger("AudioOptMain")
+
+# 必要なディレクトリを自動作成
+def ensure_directories():
+    """AudioOptに必要なディレクトリを作成"""
+    directories = [
+        "dataset",
+        "dataset/audio_files", 
+        "dataset/meta_files",
+        "models",
+        "output",
+        "logs"
+    ]
+    
+    for dir_path in directories:
+        Path(dir_path).mkdir(parents=True, exist_ok=True)
+        logger.debug(f"ディレクトリ作成: {dir_path}")
+    
+    logger.success("必要ディレクトリを作成しました")
 
 try:
     from src.core import VoiceCloner
@@ -138,31 +195,69 @@ def train_model_interactive(cloner):
     try:
         audio_files, text_files = cloner.collect_data_files()
         if len(audio_files) == 0:
-            raise AudioFileError(
-                "データファイルが見つかりません",
-                suggestions="先にデータファイルを配置してください"
-            )
+            print("\n❌ 訓練データが見つかりません")
+            print("\n📋 詳細診断:")
+            
+            # ディレクトリ存在チェック
+            dataset_path = Path("dataset")
+            audio_path = dataset_path / "audio_files" 
+            meta_path = dataset_path / "meta_files"
+            
+            print(f"  dataset/: {'✅ 存在' if dataset_path.exists() else '❌ 不存在'}")
+            print(f"  audio_files/: {'✅ 存在' if audio_path.exists() else '❌ 不存在'}")
+            print(f"  meta_files/: {'✅ 存在' if meta_path.exists() else '❌ 不存在'}")
+            
+            # ファイル数チェック
+            if audio_path.exists():
+                audio_count = len(list(audio_path.glob("*.wav")))
+                print(f"  音声ファイル数: {audio_count}")
+            if meta_path.exists():
+                text_count = len(list(meta_path.glob("*.txt")))
+                print(f"  テキストファイル数: {text_count}")
+            
+            print("\n💡 解決方法:")
+            print("  1. Python_Audio_datasetで音声データを録音してください")
+            print("  2. または、既存の音声ファイルをdataset/audio_files/に配置")
+            print("  3. 対応するテキストファイルをdataset/meta_files/に配置")
+            print("  4. ファイル名は 'audio_NNNN.wav' と 'audio_NNNN.txt' の形式で")
+            
+            return
         
         logger.success(f"{len(audio_files)}個のデータペアが見つかりました")
+        
+        # データファイル検証
+        validation_results = validate_dataset_files(audio_files, text_files)
+        valid_count = sum(1 for r in validation_results if r['valid'])
+        
+        if valid_count < len(audio_files):
+            print(f"\n⚠️ 警告: {len(audio_files) - valid_count}個のファイルに問題があります")
+            print("詳細はメニュー5（データファイル確認）で確認してください")
+            
+            proceed = safe_input("問題があるファイルを含めて訓練を続行しますか？ (y/N): ", "n").strip().lower()
+            if proceed != 'y':
+                print("訓練をキャンセルしました")
+                return
+        
     except Exception as e:
-        handle_error(e, severity=ErrorSeverity.HIGH)
+        print(f"\n❌ データファイル確認エラー: {e}")
+        logger.error(f"データファイル確認エラー: {e}")
         return
     
     # パラメータ入力
     try:
-        epochs_input = input("エポック数を入力 (デフォルト: 100): ").strip()
+        epochs_input = safe_input("エポック数を入力 (デフォルト: 100): ", "100").strip()
         epochs = int(epochs_input) if epochs_input else 100
         
         if epochs <= 0:
             raise ValueError("エポック数は1以上で入力してください")
             
-        batch_size_input = input("バッチサイズを入力 (デフォルト: 2): ").strip()
+        batch_size_input = safe_input("バッチサイズを入力 (デフォルト: 2): ", "2").strip()
         batch_size = int(batch_size_input) if batch_size_input else 2
         
         if batch_size <= 0 or batch_size > len(audio_files):
             raise ValueError(f"バッチサイズは1以上{len(audio_files)}以下で入力してください")
         
-        learning_rate_input = input("学習率を入力 (デフォルト: 0.001): ").strip()
+        learning_rate_input = safe_input("学習率を入力 (デフォルト: 0.001): ", "0.001").strip()
         learning_rate = float(learning_rate_input) if learning_rate_input else 0.001
         
         print(f"\n訓練設定:")
@@ -171,7 +266,7 @@ def train_model_interactive(cloner):
         print(f"  学習率: {learning_rate}")
         print(f"  データ数: {len(audio_files)}")
         
-        confirm = input("\n訓練を開始しますか？ (y/N): ").strip().lower()
+        confirm = safe_input("\n訓練を開始しますか？ (y/N): ", "n").strip().lower()
         if confirm != 'y':
             print("訓練をキャンセルしました")
             return
@@ -181,7 +276,7 @@ def train_model_interactive(cloner):
         cloner.train_model(epochs=epochs, batch_size=batch_size, learning_rate=learning_rate)
         
         # モデル保存
-        save_confirm = input("モデルを保存しますか？ (Y/n): ").strip().lower()
+        save_confirm = safe_input("モデルを保存しますか？ (Y/n): ", "y").strip().lower()
         if save_confirm != 'n':
             cloner.save_model()
             logger.success("モデルが保存されました")
@@ -200,11 +295,59 @@ def train_model_interactive(cloner):
 # =============================================================================
 
 def load_model_interactive(cloner):
-    """対話式でモデル読み込みを実行"""
-    model_path = input("読み込むモデルのパスを入力 (空白でデフォルト): ").strip()
+    """対話式でモデル読み込みを実行（管理改善版）"""
+    print("\n=== モデル読み込み ===")
+    
+    # 利用可能なモデルファイルを表示
+    models_path = Path("models")
+    if models_path.exists():
+        model_files = list(models_path.glob("*.pth"))
+        if model_files:
+            print("\n📁 利用可能なモデルファイル:")
+            for i, model_file in enumerate(model_files, 1):
+                file_size = model_file.stat().st_size / (1024 * 1024)  # MB
+                modified = model_file.stat().st_mtime
+                import datetime
+                mod_time = datetime.datetime.fromtimestamp(modified).strftime('%Y-%m-%d %H:%M')
+                print(f"  {i}. {model_file.name} ({file_size:.1f}MB, {mod_time})")
+        else:
+            print("\n❌ models/ディレクトリにモデルファイルが見つかりません")
+    else:
+        print("\n❌ models/ディレクトリが存在しません")
+    
+    # デフォルトモデルパスチェック
+    default_model = models_path / "voice_clone_model.pth"
+    if default_model.exists():
+        print(f"\n✅ デフォルトモデル: {default_model.name}")
+        use_default = safe_input("デフォルトモデルを使用しますか？ (Y/n): ", "y").strip().lower()
+        if use_default != 'n':
+            try:
+                cloner.load_model(str(default_model))
+                print("✅ モデル読み込み完了")
+                return
+            except Exception as e:
+                print(f"❌ デフォルトモデル読み込みエラー: {e}")
+    else:
+        print(f"\n⚠️ デフォルトモデルが見つかりません: {default_model}")
+    
+    # カスタムパス入力
+    model_path = safe_input("読み込むモデルのパスを入力 (空白でキャンセル): ", "").strip()
     if not model_path:
-        model_path = None
-    cloner.load_model(model_path)
+        print("モデル読み込みをキャンセルしました")
+        return
+    
+    # モデル読み込み実行
+    try:
+        if not Path(model_path).exists():
+            print(f"❌ ファイルが存在しません: {model_path}")
+            return
+            
+        cloner.load_model(model_path)
+        print("✅ モデル読み込み完了")
+        
+    except Exception as e:
+        print(f"❌ モデル読み込みエラー: {e}")
+        logger.error(f"モデル読み込みエラー: {e}")
 
 # =============================================================================
 # メニュー3: 音声合成
@@ -214,19 +357,31 @@ def load_model_interactive(cloner):
 def synthesize_speech_interactive(cloner):
     """対話式で音声合成を実行"""
     if cloner.model is None:
-        error = ModelError(
-            "モデルが読み込まれていません",
-            suggestions="先にモデルを読み込むか訓練してください"
-        )
-        handle_error(error, severity=ErrorSeverity.HIGH)
-        return
+        print("\n❌ モデルが読み込まれていません")
+        print("\n📋 解決方法:")
+        print("  1. メニュー2でモデルを読み込む")
+        print("  2. メニュー1でモデルを訓練する")
+        
+        # 自動的にモデル読み込みを提案
+        auto_load = safe_input("\n自動的にモデル読み込みを試行しますか？ (Y/n): ", "y").strip().lower()
+        if auto_load != 'n':
+            load_model_interactive(cloner)
+            
+            # 再チェック
+            if cloner.model is None:
+                print("❌ モデル読み込みに失敗しました")
+                return
+            else:
+                print("✅ モデル読み込み成功、音声合成を続行します")
+        else:
+            return
     
     try:
-        text = input("合成したいテキストを入力: ").strip()
+        text = safe_input("合成したいテキストを入力: ", "こんにちは").strip()
         if not text:
             raise ValueError("テキストが入力されませんでした")
         
-        output_path = input("出力ファイル名（空白でdefault）: ").strip()
+        output_path = safe_input("出力ファイル名（空白でdefault）: ", "").strip()
         if not output_path:
             output_path = None
         
@@ -251,37 +406,68 @@ def add_new_data_interactive(cloner):
 # =============================================================================
 
 def display_data_files(cloner):
-    """データファイル一覧を表示"""
+    """データファイル一覧を表示（検証強化版）"""
     audio_files, text_files = cloner.collect_data_files()
     print("\n=== 検出されたデータファイル ===")
     
+    # データファイル検証
+    validation_results = validate_dataset_files(audio_files, text_files)
+    
     if len(audio_files) == 0:
         print("❌ データファイルが見つかりません。")
+        
+        # ディレクトリの存在確認
+        dataset_path = Path("dataset")
+        audio_path = dataset_path / "audio_files"
+        meta_path = dataset_path / "meta_files"
+        
+        print(f"\nディレクトリ状態:")
+        print(f"  dataset/: {'✅ 存在' if dataset_path.exists() else '❌ 不存在'}")
+        print(f"  audio_files/: {'✅ 存在' if audio_path.exists() else '❌ 不存在'}")
+        print(f"  meta_files/: {'✅ 存在' if meta_path.exists() else '❌ 不存在'}")
+        
         print("\n正しいディレクトリ構造:")
         print("dataset/")
         print("├── audio_files/")
-        print("│   ├── audio_1.wav")
-        print("│   ├── audio_2.wav")
+        print("│   ├── audio_0001.wav")
+        print("│   ├── audio_0002.wav")
         print("│   └── ...")
         print("└── meta_files/")
-        print("    ├── meta_1.txt")
-        print("    ├── meta_2.txt")
+        print("    ├── audio_0001.txt")
+        print("    ├── audio_0002.txt")
         print("    └── ...")
         
-        print("\n❗ ファイル名は必ず 'audio_N.wav' と 'meta_N.txt' の形式で、")
-        print("   Nは同じ番号にしてください。")
+        print("\n❗ ファイル名は必ず 'audio_NNNN.wav' と 'audio_NNNN.txt' の形式で、")
+        print("   NNNNは同じ番号（例: 0001）にしてください。")
     else:
         print(f"✓ {len(audio_files)}個のデータペアが見つかりました:\n")
+        
+        # 検証結果サマリ表示
+        if validation_results:
+            valid_count = sum(1 for r in validation_results if r['valid'])
+            print(f"検証結果: {valid_count}/{len(validation_results)} ペアが有効\n")
+        
         for i, (audio, text) in enumerate(zip(audio_files, text_files)):
-            print(f"{i+1:2d}. Audio: {os.path.basename(audio)}")
+            # 検証結果を反映
+            status_icon = "✅" if validation_results and i < len(validation_results) and validation_results[i]['valid'] else "❌"
+            
+            print(f"{status_icon} {i+1:2d}. Audio: {os.path.basename(audio)}")
             print(f"     Text:  {os.path.basename(text)}")
             
-            # ファイルサイズも表示
+            # ファイルサイズと検証情報表示
             try:
                 audio_size = os.path.getsize(audio) / 1024  # KB
                 print(f"     Size:  {audio_size:.1f} KB")
-            except:
-                print(f"     Size:  不明")
+                
+                # 検証詳細表示
+                if validation_results and i < len(validation_results):
+                    result = validation_results[i]
+                    if not result['valid']:
+                        for issue in result['issues']:
+                            print(f"     ⚠️  {issue}")
+                            
+            except Exception as e:
+                print(f"     Size:  不明 ({e})")
             print()
 
 # =============================================================================
@@ -316,7 +502,7 @@ def display_preprocessing_results(cloner):
             print(f"成功率: {summary['success_rate']:.1f}%")
             
             # 詳細表示
-            if input("\n詳細を表示しますか？ (y/N): ").strip().lower() == 'y':
+            if safe_input("\n詳細を表示しますか？ (y/N): ", "n").strip().lower() == 'y':
                 print("\n=== ファイル別詳細 ===")
                 for detail in stats["file_details"]:
                     if "error" not in detail:
@@ -658,7 +844,7 @@ def verify_training_data_and_retrain(cloner):
             print(f"  {i+1}. {os.path.basename(text_files[i])}: エラー - {e}")
     
     # 再訓練の提案
-    retrain = input(f"\n{len(audio_files)}個のデータで再訓練しますか？ (y/N): ").strip().lower()
+    retrain = safe_input(f"\n{len(audio_files)}個のデータで再訓練しますか？ (y/N): ", "n").strip().lower()
     if retrain == 'y':
         print("再訓練を開始...")
         
@@ -685,7 +871,7 @@ def model_synthesis_diagnosis_menu(cloner):
         print("1. 既存モデルを強制読み込み")
         print("2. データ確認と再訓練")
         
-        sub_choice = input("選択 (1/2): ").strip()
+        sub_choice = safe_input("選択 (1/2): ", "1").strip()
         
         if sub_choice == "1":
             if force_load_model(cloner):
@@ -869,7 +1055,7 @@ def retrain_with_better_parameters(cloner):
     print(f"  バッチサイズ: {batch_size}")
     print(f"  学習率: {learning_rate}")
     
-    confirm = input("この設定で再訓練しますか？ (y/N): ").strip().lower()
+    confirm = safe_input("この設定で再訓練しますか？ (y/N): ", "n").strip().lower()
     if confirm == 'y':
         try:
             cloner.train_model(
@@ -1020,7 +1206,7 @@ def use_external_vocoder(cloner):
     print("2. WaveGlow（外部ライブラリ）")
     print("3. HiFi-GAN（最高品質）")
     
-    choice = input("選択 (1/2/3): ").strip()
+    choice = safe_input("選択 (1/2/3): ", "1").strip()
     
     if choice == "1":
         # 上記の_neural_vocoderを使用
@@ -1046,7 +1232,7 @@ def use_pretrained_approach(cloner):
     print("2. 長時間再訓練（1-2時間、根本解決）")
     print("3. 戻る")
     
-    choice = input("選択 (1/2/3): ").strip()
+    choice = safe_input("選択 (1/2/3): ", "1").strip()
     
     if choice == "1":
         return emergency_model_fix(cloner)
@@ -1066,6 +1252,9 @@ def use_pretrained_approach(cloner):
 def main():
     print("音声クローニングシステムへようこそ")
     
+    # 必要ディレクトリ作成
+    ensure_directories()
+    
     # クローンオブジェクトの初期化
     cloner = VoiceCloner()
     
@@ -1074,59 +1263,150 @@ def main():
         sys.exit(1)
     
     while True:
-        # メニュー表示
-        print("\n=== メニュー ===")
-        print("1. データセットの前処理とモデル訓練")
-        print("2. 既存モデルの読み込み")
-        print("3. 音声合成")
-        print("4. 新しいデータの追加")
-        print("5. データファイル確認")
-        print("6. システム情報表示")
-        print("7. 前処理結果確認")
-        print("8. モデル・音声合成診断")
-        print("9. テスト音声生成")
-        print("10. 詳細モデル診断")
-        print("11. 改善パラメータで再訓練")
-        print("12. ボコーダー問題診断")
-        print("13. 緊急モデル修正")
-        print("14. 外部ボコーダー使用設定")
-        print("0. 終了")
+        # メニュー表示（カテゴリ別番号）
+        print("\n" + "="*50)
+        print("🤖 AudioOpt - 音声クローニングシステム")
+        print("="*50)
+        print("📚 データ管理:")
+        print("  1.1 データセットの前処理とモデル訓練")
+        print("  1.2 新しいデータの追加")
+        print("  1.3 データファイル確認")
+        print("🧠 モデル操作:")
+        print("  2.1 既存モデルの読み込み") 
+        print("  2.2 モデル・音声合成診断")
+        print("  2.3 改善パラメータで再訓練")
+        print("🎵 音声生成:")
+        print("  3.1 音声合成")
+        print("  3.2 テスト音声生成")
+        print("🔧 システム情報:")
+        print("  4.1 システム情報表示")
+        print("  4.2 前処理結果確認")
+        print("🚨 診断・修正:")
+        print("  5.1 詳細モデル診断")
+        print("  5.2 ボコーダー問題診断")
+        print("  5.3 緊急モデル修正")
+        print("  5.4 外部ボコーダー使用設定")
+        print("-" * 50)
+        print("  0. 終了")
+        print("="*50)
         
-        choice = input("選択肢を入力: ").strip()
+        choice = safe_input("選択肢を入力: ", "0").strip()
         
         if choice == "0":
             print("システムを終了します")
             break
-        elif choice == "1":
+        # 📚 データ管理
+        elif choice == "1.1" or choice == "1":
             train_model_interactive(cloner)
-        elif choice == "2":
-            load_model_interactive(cloner)
-        elif choice == "3":
-            synthesize_speech_interactive(cloner)
-        elif choice == "4":
+        elif choice == "1.2":
             add_new_data_interactive(cloner)
-        elif choice == "5":
+        elif choice == "1.3":
             display_data_files(cloner)
-        elif choice == "6":
-            display_system_info(cloner)
-        elif choice == "7":
-            display_preprocessing_results(cloner)
-        elif choice == "8":
+        # 🧠 モデル操作
+        elif choice == "2.1" or choice == "2":
+            load_model_interactive(cloner)
+        elif choice == "2.2":
             model_synthesis_diagnosis_menu(cloner)
-        elif choice == "9":
-            generate_test_audio(cloner)
-        elif choice == "10":
-            detailed_model_diagnosis(cloner)
-        elif choice == "11":
+        elif choice == "2.3":
             retrain_with_better_parameters(cloner)
-        elif choice == "12":
+        # 🎵 音声生成
+        elif choice == "3.1" or choice == "3":
+            synthesize_speech_interactive(cloner)
+        elif choice == "3.2":
+            generate_test_audio(cloner)
+        # 🔧 システム情報
+        elif choice == "4.1" or choice == "4":
+            display_system_info(cloner)
+        elif choice == "4.2":
+            display_preprocessing_results(cloner)
+        # 🚨 診断・修正
+        elif choice == "5.1" or choice == "5":
+            detailed_model_diagnosis(cloner)
+        elif choice == "5.2":
             diagnose_vocoder_issue(cloner)
-        elif choice == "13":
+        elif choice == "5.3":
             use_pretrained_approach(cloner)
-        elif choice == "14":
+        elif choice == "5.4":
             use_external_vocoder(cloner)
         else:
             print("無効な選択肢です。再度入力してください。")
+            print("例: 1.1, 2.2, 3.1 など、または 1, 2, 3 の省略形も可能")
+
+# データファイル検証関数（新規追加）
+def validate_dataset_files(audio_files, text_files):
+    """データセットファイルの検証"""
+    try:
+        import soundfile as sf
+    except ImportError:
+        logger.warning("soundfile未インストール - 音声ファイル詳細検証をスキップ")
+        sf = None
+    
+    validation_results = []
+    
+    for i, (audio_file, text_file) in enumerate(zip(audio_files, text_files)):
+        result = {
+            'index': i,
+            'audio_file': audio_file,
+            'text_file': text_file,
+            'valid': True,
+            'issues': []
+        }
+        
+        # 音声ファイル検証
+        try:
+            if not os.path.exists(audio_file):
+                result['valid'] = False
+                result['issues'].append("音声ファイルが存在しない")
+            else:
+                # ファイルサイズチェック
+                file_size = os.path.getsize(audio_file)
+                if file_size < 1024:  # 1KB未満
+                    result['valid'] = False
+                    result['issues'].append(f"音声ファイルが小さすぎる ({file_size} bytes)")
+                
+                # 音声ファイルの読み込みチェック（soundfile利用可能時）
+                if sf:
+                    try:
+                        data, samplerate = sf.read(audio_file)
+                        duration = len(data) / samplerate
+                        
+                        if duration < 0.5:  # 0.5秒未満
+                            result['issues'].append(f"音声が短すぎる ({duration:.2f}秒)")
+                        elif duration > 30:  # 30秒超過
+                            result['issues'].append(f"音声が長すぎる ({duration:.2f}秒)")
+                            
+                    except Exception as e:
+                        result['valid'] = False
+                        result['issues'].append(f"音声ファイルが破損: {str(e)[:50]}")
+                    
+        except Exception as e:
+            result['valid'] = False
+            result['issues'].append(f"音声ファイルエラー: {str(e)[:50]}")
+        
+        # テキストファイル検証
+        try:
+            if not os.path.exists(text_file):
+                result['valid'] = False
+                result['issues'].append("テキストファイルが存在しない")
+            else:
+                with open(text_file, 'r', encoding='utf-8') as f:
+                    text_content = f.read().strip()
+                    
+                if not text_content:
+                    result['valid'] = False
+                    result['issues'].append("テキストファイルが空")
+                elif len(text_content) < 3:
+                    result['issues'].append(f"テキストが短すぎる ({len(text_content)}文字)")
+                elif len(text_content) > 200:
+                    result['issues'].append(f"テキストが長すぎる ({len(text_content)}文字)")
+                    
+        except Exception as e:
+            result['valid'] = False
+            result['issues'].append(f"テキストファイルエラー: {str(e)[:50]}")
+        
+        validation_results.append(result)
+    
+    return validation_results
 
 if __name__ == "__main__":
     main()

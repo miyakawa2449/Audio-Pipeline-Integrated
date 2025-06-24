@@ -2,6 +2,18 @@ import os
 import sys
 import subprocess
 from pathlib import Path
+
+# 安全なinput関数
+def safe_input(prompt, default=""):
+    """EOFErrorに対応した安全なinput関数"""
+    try:
+        return input(prompt)
+    except EOFError:
+        print(f"\n[自動入力] {default}")
+        return default
+    except KeyboardInterrupt:
+        print("\n[中断されました]")
+        return "6"
 from common.logger import get_logger
 from common.error_handler import error_handler, ErrorSeverity, handle_error
 from common.exceptions import AudioPipelineError
@@ -33,7 +45,7 @@ class IntegratedAudioPipeline:
         """統合メインメニュー"""
         while True:
             self.display_main_menu()
-            choice = input("\n選択してください (1-6): ").strip()
+            choice = safe_input("\n選択してください (1-6): ", "6").strip()
             
             if choice == '1':
                 self.run_dataset_creator()
@@ -51,7 +63,7 @@ class IntegratedAudioPipeline:
             else:
                 print("❌ 無効な選択です")
                 
-            input("\nEnterを押して続行...")
+            safe_input("\nEnterを押して続行...", "")
     
     def display_main_menu(self):
         """統合メインメニュー表示"""

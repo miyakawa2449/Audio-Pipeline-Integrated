@@ -3,6 +3,18 @@ import sys
 import time
 from pathlib import Path
 
+# 安全なinput関数
+def safe_input(prompt, default=""):
+    """EOFErrorに対応した安全なinput関数"""
+    try:
+        return input(prompt)
+    except EOFError:
+        print(f"\n[自動入力] {default}")
+        return default
+    except KeyboardInterrupt:
+        print("\n[中断されました]")
+        return "q"
+
 # 統一ログシステムと共通モジュール
 sys.path.append(str(Path(__file__).parent.parent.parent / "common"))
 try:
@@ -13,7 +25,27 @@ try:
 except ImportError:
     # フォールバック用のダミーロガー
     import logging
-    def get_logger(name): return logging.getLogger(name)
+    
+    class FallbackLogger:
+        def __init__(self, name):
+            self.logger = logging.getLogger(name)
+            self.logger.setLevel(logging.INFO)
+            if not self.logger.handlers:
+                handler = logging.StreamHandler()
+                handler.setFormatter(logging.Formatter('%(levelname)s | %(message)s'))
+                self.logger.addHandler(handler)
+        
+        def debug(self, msg): self.logger.debug(msg)
+        def info(self, msg): self.logger.info(msg)
+        def warning(self, msg): self.logger.warning(msg)
+        def error(self, msg): self.logger.error(msg)
+        def start_operation(self, msg): self.logger.info(f"🚀 {msg} を開始")
+        def complete_operation(self, msg): self.logger.info(f"✅ {msg} が完了")
+        def success(self, msg): self.logger.info(f"✅ {msg}")
+        def progress(self, msg): self.logger.info(f"🔄 {msg}")
+        def audio_info(self, msg): self.logger.info(f"🎵 {msg}")
+    
+    def get_logger(name): return FallbackLogger(name)
     def get_audio_utils(*args): return None
     def setup_directories(*args): return True
     def create_metadata_file(*args): return True
@@ -92,12 +124,22 @@ class AudioDatasetCreator:
     
     def setup_directories_common(self):
         """必要なディレクトリを作成（共通モジュール版）"""
-        directories = ["dataset/audio_files", "dataset/meta_files", "data"]
-        success = setup_directories(directories)
-        if success:
-            self.logger.success("全ディレクトリ作成完了")
-        else:
-            self.logger.warning("一部ディレクトリ作成に失敗")
+        directories = ["dataset/audio_files", "dataset/meta_files", "data", "logs"]
+        
+        # フォールバックディレクトリ作成
+        for dir_path in directories:
+            Path(dir_path).mkdir(parents=True, exist_ok=True)
+            self.logger.debug(f"ディレクトリ作成: {dir_path}")
+        
+        # 共通モジュール使用（利用可能な場合）
+        try:
+            success = setup_directories(directories)
+            if success:
+                self.logger.success("全ディレクトリ作成完了")
+            else:
+                self.logger.warning("一部ディレクトリ作成に失敗")
+        except:
+            self.logger.success("フォールバックディレクトリ作成完了")
 
     def display_interface(self):
         """メインインターフェース表示"""
@@ -192,7 +234,7 @@ class AudioDatasetCreator:
                     time.sleep(0.1)
             else:
                 # Linux/Mac用（簡易版）
-                return input("コマンド: ").strip().lower()
+                return safe_input("コマンド: ", "q").strip().lower()
                 
         except KeyboardInterrupt:
             return 'q'
@@ -210,7 +252,7 @@ class AudioDatasetCreator:
             if self.audio_recorder.is_recording:
                 command = self.get_recording_command()
             else:
-                command = input("\nコマンドを入力してください: ").strip().lower()
+                command = safe_input("\nコマンドを入力してください: ", "q").strip().lower()
             
             # コマンド処理
             if command == 'q':
@@ -347,7 +389,7 @@ class AudioDatasetCreator:
         # 既存ファイル確認
         if audio_path.exists():
             print(f"\n⚠️ {audio_filename} は既に存在します。")
-            overwrite = input("上書きしますか？ (y/n): ").strip().lower()
+            overwrite = safe_input("上書きしますか？ (y/n): ", "n").strip().lower()
             if overwrite not in ['y', 'yes']:
                 print("❌ 保存をキャンセルしました")
                 self.logger.info(f"ファイル上書きをキャンセル: {audio_filename}")
@@ -467,7 +509,7 @@ class AudioDatasetCreator:
             return
             
         try:
-            line_num = int(input("移動先の行番号を入力: "))
+            line_num = int(safe_input("移動先の行番号を入力: ", "1"))
             self.current_audio = None
             if self.text_manager.jump_to_line(line_num):
                 print(f"🎯 {line_num}行目に移動しました")

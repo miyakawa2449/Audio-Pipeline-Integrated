@@ -45,7 +45,29 @@ try:
 except ImportError:
     # フォールバック用のダミーロガー
     import logging
-    def get_logger(name): return logging.getLogger(name)
+    
+    class FallbackLogger:
+        def __init__(self, name):
+            self.logger = logging.getLogger(name)
+            self.logger.setLevel(logging.INFO)
+            if not self.logger.handlers:
+                handler = logging.StreamHandler()
+                handler.setFormatter(logging.Formatter('%(levelname)s | %(message)s'))
+                self.logger.addHandler(handler)
+        
+        def debug(self, msg): self.logger.debug(msg)
+        def info(self, msg): self.logger.info(msg)
+        def warning(self, msg): self.logger.warning(msg)
+        def error(self, msg): self.logger.error(msg)
+        def start_operation(self, msg): self.logger.info(f"🚀 {msg} を開始")
+        def complete_operation(self, msg): self.logger.info(f"✅ {msg} が完了")
+        def success(self, msg): self.logger.info(f"✅ {msg}")
+        def progress(self, msg): self.logger.info(f"🔄 {msg}")
+        def audio_info(self, msg): self.logger.info(f"🎵 {msg}")
+        def model_info(self, msg): self.logger.info(f"🤖 {msg}")
+        def device_info(self, msg): self.logger.info(f"🎛️ {msg}")
+    
+    def get_logger(name): return FallbackLogger(name)
     def get_audio_utils(*args): return None
     def get_torch_device(): return torch.device('cpu')
     def get_device_utils(): return None
@@ -124,7 +146,7 @@ class VoiceCloner:
             match = re.match(r"audio_(\d+)\.wav", basename)
             if match:
                 number = match.group(1)
-                meta_file = os.path.join(self.meta_path, f"meta_{number}.txt")
+                meta_file = os.path.join(self.meta_path, f"audio_{number}.txt")
                 
                 # 対応するメタファイルが存在する場合のみ追加
                 if os.path.exists(meta_file):
